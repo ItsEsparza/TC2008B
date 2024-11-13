@@ -1,52 +1,59 @@
-import heapq  # for priority queue
+# Code by Facundo Esparza GH: ItsEsparza
+# Comments complemented by ChatGPT
+
+import heapq
 from mesa import Agent
 
 class Roomba(Agent):
     def __init__(self, position, model, condition="Charged", battery=100):
+        """
+        Initialize the Roomba agent with position, model reference, condition, battery level, and other state-tracking attributes.
+        """
         super().__init__(position, model)   
         self.position = position
         self.condition = condition
         self.battery = battery
         self.next_condition = None
-        self.path = []  
-        self.low_battery_threshold = 30  
-        self.recent_positions = set()  # Track recent positions to avoid loops
-        self.recent_positions_limit = 5  # Limit memory of visited positions
+        self.path = []  # Holds the path to the target
+        self.low_battery_threshold = 30  # Threshold to start searching for a charging station
+        self.recent_positions = set()  # Track recently visited positions to avoid repetition
+        self.recent_positions_limit = 5  # Limit for recent positions memory
+        self.moves = 0  # Count the moves made by the Roomba
 
     def verify_cell_type(self):
         """
-        Check if the Roomba is on a dirty tile and clean it, or on a charging station and recharge.
+        Check the current cell for dirt or a charging station. Clean if dirty, or recharge if at a charging station.
         """
         for agent in self.model.grid.get_cell_list_contents([self.position]):
             if isinstance(agent, tile) and agent.condition == "Dirty":
-                print(f"[Tile] Cleaning tile at {self.position}")
-                agent.condition = "Cleaned"  # Mark the tile as cleaned
-                self.condition = "Exploring"
+                agent.condition = "Cleaned"  # Clean the tile
+                self.condition = "Exploring"  # Resume exploring
                 break
         
         for agent in self.model.grid.get_cell_list_contents([self.position]):
             if isinstance(agent, ChargingStation):
-                print(f"[Charging] Reached charging station at {self.position}. Battery recharged.")
-                self.condition = "Charging"
-                self.battery = 100  
+                if self.battery < 100:
+                    self.battery += 5  # Recharge battery by 5% per step
+                    self.battery = min(self.battery, 100)  # Cap battery at 100%
+                    self.condition = "Charging"
+                if self.battery == 100:
+                    self.condition = "Exploring"  # Resume exploring when fully charged
                 break
-
+        
     def step(self):
         """
-        Called on each simulation step. Verifies cell type and moves if path is available.
+        Called on each simulation step. Verifies cell type and moves if a path is available.
         """
-        print(f"[Step] Position: {self.position}, Battery: {self.battery}, Condition: {self.condition}, Path: {self.path}")
         self.verify_cell_type()
         self.check_battery_and_move()
 
     def check_battery_and_move(self):
         """
-        Check battery level and prioritize finding a charging station if battery is low.
+        Check battery level; if low, prioritize finding a charging station, else move to the next target.
         """
         if self.battery <= self.low_battery_threshold and not self.is_charging_path():
-            print(f"[Low Battery] Battery: {self.battery}. Prioritizing charging station.")
-            self.search_path(for_charging=True)  
-        elif not self.path:  # If no path is set, search for a target
+            self.search_path(for_charging=True)  # Search for a charging station
+        elif not self.path:  # If no path, search for a new target
             self.search_path()
         
         self.move()
@@ -65,35 +72,35 @@ class Roomba(Agent):
 
     def move(self):
         """
-        Move the Roomba one step along its path. If it reaches the target, clear the path.
+        Move the Roomba one step along its path unless it's charging and not fully charged.
         """
+        if self.condition == "Charging" and self.battery < 100:
+            return  # Remain stationary while charging
+
         if self.path:
             next_position = self.path.pop(0)
             if next_position != self.position:
-                print(f"[Move] Moving from {self.position} to {next_position}")
                 self.model.grid.move_agent(self, next_position)
-                self.position = next_position  # Update position to prevent teleporting issues
+                self.position = next_position
+                self.moves += 1
                 self.battery -= 1  # Decrease battery per move
                 
                 if self.battery <= 0:
-                    print("[Battery] Out of battery.")
                     self.condition = "Out of battery"
-                    self.path = []  
+                    self.path = []
                 
                 if not self.path:
-                    print("[Path] Reached destination. Path cleared.")
                     self.condition = "Idle"
-                    self.recent_positions.clear()  # Reset recent positions when reaching a destination
+                    self.recent_positions.clear()  # Reset recent positions when idle
         else:
-            print("[Search] No path found. Searching for a new target.")
-            self.search_path()  
+            self.search_path()  # Look for a new path if path list is empty
 
     def search_path(self, for_charging=False):
         """
-        Search for the nearest dirty tile or charging station.
-        Uses A* algorithm to find the shortest path.
+        Search for the nearest dirty tile or charging station using the A* algorithm.
+        
         Args:
-        for_charging: If True, only searches for the nearest charging station.
+        for_charging: If True, only search for the nearest charging station.
         """
         targets = []
         for agent in self.model.schedule.agents:
@@ -108,20 +115,19 @@ class Roomba(Agent):
         
         if targets:
             _, target_position = min(targets, key=lambda x: x[0])
-            print(f"[Path Search] Nearest target selected at {target_position}")
             self.path = self.astar(self.position, target_position)
             self.recent_positions.add(target_position)
             if len(self.recent_positions) > self.recent_positions_limit:
                 self.recent_positions.pop()
-        else:
-            print("[Path Search] No reachable targets found.")
 
     def astar(self, start, goal):
         """
         A* algorithm to find the shortest path from start to goal.
+        
         Args:
         start: The starting position (tuple).
         goal: The goal position (tuple).
+        
         Returns:
         A list of tuples representing the path from start to goal, excluding the starting position.
         """
@@ -137,7 +143,6 @@ class Roomba(Agent):
             _, cost, current, path = heapq.heappop(open_list)
             
             if current == goal:
-                print(f"[A*] Path found to goal: {goal}")
                 return path[1:] + [goal]
 
             if current in closed_set:
@@ -164,7 +169,6 @@ class Roomba(Agent):
                 new_cost = cost + 1
                 heapq.heappush(open_list, (new_cost + heuristic(neighbor, goal), new_cost, neighbor, path + [current]))
 
-        print("[A*] No path found to goal.")
         return []
 
 
@@ -203,7 +207,7 @@ class Obstacle(Agent):
             
 class tile(Agent):
     """
-    Dirty tile.
+    Dirty tile agent representing a dirty spot on the floor.
     """
     def __init__(self, position, model, condition="Dirty"):
         """
